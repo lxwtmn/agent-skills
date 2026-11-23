@@ -4,8 +4,12 @@ A slice starts only the auto-configuration one layer needs. It answers what a un
 test cannot: does the mapping resolve, is validation enforced, is the JSON shaped
 right, does security apply, does the query return the right rows.
 
-On Spring Boot 4 each slice needs its own test starter (`spring-boot-starter-webmvc-test`,
-`spring-boot-starter-data-jpa-test`, ...). On Boot 3.x `spring-boot-starter-test` covers all.
+On Spring Boot 4 every technology starter has its own test starter
+(`spring-boot-starter-webmvc-test`, `spring-boot-starter-data-jpa-test`, ...) and the
+slice annotations moved into those modules, so their imports differ from Boot 3.x.
+On Boot 3.x `spring-boot-starter-test` covers all. Packages and starters side by
+side: version table in `build-and-speed.md`. The examples below leave imports out;
+take them from a neighbouring test in the project.
 
 ## `@WebMvcTest`
 
@@ -104,8 +108,8 @@ tag; never `latest`.
 
 ## Use-case slice
 
-A service that must be tested with the real database (query semantics, transaction
-boundaries, constraints) can be loaded into the JPA slice:
+A service that must be tested with the real database (query semantics, constraints,
+the interplay of several repositories) can be loaded into the JPA slice:
 
 ```java
 @DataJpaTest
@@ -124,6 +128,16 @@ thirty contexts.
 
 Properties on the annotation (`@DataJpaTest(properties = ...)`) also split the
 cache. Put shared properties in the test profile instead.
+
+What this rung cannot answer: `@DataJpaTest` wraps every test in a transaction that
+is rolled back, and a service with default propagation joins it instead of opening
+its own. So the test never commits, the service's own `@Transactional` boundaries
+are not exercised, and lazy loading works where it would fail in production. Flush
+before asserting on constraints or generated values, otherwise the SQL may never
+run. If the question is about commit behaviour, rollback rules or what happens
+outside a transaction, go one rung up to an integration test, or switch the test
+transaction off with `@Transactional(propagation = Propagation.NOT_SUPPORTED)` and
+clean up the data yourself.
 
 ## `@JsonTest`
 

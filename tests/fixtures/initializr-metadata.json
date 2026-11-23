@@ -1,0 +1,69 @@
+{
+  "type": {
+    "type": "action",
+    "default": "gradle-project",
+    "values": [
+      {"id": "gradle-project", "name": "Gradle - Groovy"},
+      {"id": "gradle-project-kotlin", "name": "Gradle - Kotlin"},
+      {"id": "maven-project", "name": "Maven"}
+    ]
+  },
+  "language": {
+    "type": "single-select",
+    "default": "java",
+    "values": [
+      {"id": "java", "name": "Java"},
+      {"id": "kotlin", "name": "Kotlin"}
+    ]
+  },
+  "bootVersion": {
+    "type": "single-select",
+    "default": "4.2.0",
+    "values": [
+      {"id": "4.2.1-SNAPSHOT", "name": "4.2.1 (SNAPSHOT)"},
+      {"id": "4.2.0", "name": "4.2.0"},
+      {"id": "4.1.3", "name": "4.1.3"},
+      {"id": "4.0.10", "name": "4.0.10"}
+    ]
+  },
+  "javaVersion": {
+    "type": "single-select",
+    "default": "17",
+    "values": [
+      {"id": "25", "name": "25"},
+      {"id": "21", "name": "21"},
+      {"id": "17", "name": "17"}
+    ]
+  },
+  "packaging": {
+    "type": "single-select",
+    "default": "jar",
+    "values": [
+      {"id": "jar", "name": "Jar"},
+      {"id": "war", "name": "War"}
+    ]
+  },
+  "groupId": {"type": "text", "default": "com.example"},
+  "artifactId": {"type": "text", "default": "demo"},
+  "dependencies": {
+    "type": "hierarchical-multi-select",
+    "values": [
+      {
+        "name": "Web",
+        "values": [
+          {"id": "web", "name": "Spring Web", "description": "Build web applications with Spring MVC."},
+          {"id": "session-data-mongodb", "name": "Spring Session for Spring Data MongoDB", "description": "Session storage in MongoDB.", "versionRange": "[4.0.0,4.1.0-M1)"}
+        ]
+      },
+      {
+        "name": "SQL",
+        "values": [
+          {"id": "data-jpa", "name": "Spring Data JPA", "description": "Persist data in SQL stores with the Java Persistence API."},
+          {"id": "postgresql", "name": "PostgreSQL Driver", "description": "A JDBC and R2DBC driver for PostgreSQL."},
+          {"id": "newcomer", "name": "Newcomer Starter", "description": "Only available on recent versions.", "versionRange": "4.2.0"},
+          {"id": "oddball", "name": "Oddball Starter", "description": "Declares a range this script cannot parse.", "versionRange": "2.2.x"}
+        ]
+      }
+    ]
+  }
+}

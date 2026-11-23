@@ -20,9 +20,13 @@ Commands
                            keyword (case-insensitive). Use this to turn a user's
                            plain-language wish ("postgres", "security") into the
                            exact dependency IDs the API expects.
-  validate <id1,id2,...>   Check that each dependency ID exists. Invalid IDs are
-                           reported with close suggestions so you can correct
-                           them before calling the API.
+  validate <id1,id2,...> [--boot-version V]
+                           Check that each dependency ID exists and is
+                           compatible with the Spring Boot version (the
+                           service default unless --boot-version is given).
+                           Unknown IDs are reported with close suggestions,
+                           incompatible ones with the range they require, so
+                           you can correct them before calling the API.
   deps [group]             List dependency IDs, optionally filtered to one group
                            (e.g. "SQL", "Web"). Omit the group to list all.
 
@@ -37,17 +41,23 @@ Examples
   python query_initializr.py versions
   python query_initializr.py search postgres
   python query_initializr.py validate web,data-jpa,security
+  python query_initializr.py validate web,vaadin --boot-version 4.1.3
   python query_initializr.py --base-url https://start.example.com deps SQL
 """
 
 import argparse
 import difflib
+import http.client
 import json
+import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
 DEFAULT_BASE_URL = "https://start.spring.io"
+FETCH_ATTEMPTS = 3
+TRANSIENT_ERRORS = (http.client.IncompleteRead, ConnectionError, TimeoutError)
 
 # The service negotiates a vendor JSON media type. Newer instances speak higher
 # versions; we ask for a few, best-first, and fall back to plain JSON. The
@@ -57,6 +67,17 @@ ACCEPT_HEADERS = [
     "application/vnd.initializr.v2.1+json",
     "application/json",
 ]
+
+
+def read_body(request):
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.read().decode("utf-8")
+        except TRANSIENT_ERRORS:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            time.sleep(attempt)
 
 
 def fetch_metadata(base_url):
@@ -72,9 +93,7 @@ def fetch_metadata(base_url):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read().decode("utf-8")
-            return json.loads(raw)
+            return json.loads(read_body(request))
         except urllib.error.HTTPError as error:
             last_error = error
             if error.code == 406:  # this Accept not supported; try the next one
@@ -99,6 +118,13 @@ def fetch_metadata(base_url):
                 f"Could not reach {url}: {error.reason}.\n"
                 "If you are on a restricted network, allowlist the host or run "
                 "in an environment that can reach the internet."
+            )
+        except TRANSIENT_ERRORS as error:
+            sys.exit(
+                f"The connection to {url} broke off {FETCH_ATTEMPTS} times while "
+                f"reading the metadata ({error!r}).\n"
+                "Try again in a moment. If it keeps failing, a proxy or restricted "
+                "network is cutting the response short."
             )
         except json.JSONDecodeError:
             # Wrong media type slipped through; try the next Accept header.
@@ -224,28 +250,93 @@ def cmd_search(meta, keyword):
             print(f"      {dep['description']}")
 
 
-def cmd_validate(meta, ids_arg):
+QUALIFIER_RANK = {"M": 0, "RC": 1, "SNAPSHOT": 2, "BUILD-SNAPSHOT": 2, "RELEASE": 3}
+VERSION_PATTERN = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:[.-]([A-Za-z-]+?)(\d*))?")
+
+
+def parse_version(text):
+    match = VERSION_PATTERN.fullmatch(text.strip())
+    if not match:
+        return None
+    major, minor, patch, qualifier, number = match.groups()
+    rank = QUALIFIER_RANK.get((qualifier or "RELEASE").upper())
+    if rank is None:
+        return None
+    return (int(major), int(minor), int(patch), rank, int(number or 0))
+
+
+def version_in_range(version, range_text):
+    text = range_text.strip()
+    if not text:
+        return True
+    target = parse_version(version)
+    if target is None:
+        return None
+    if text[0] in "[(" and text[-1] in "])":
+        lower_text, _, upper_text = text[1:-1].partition(",")
+        lower, upper = parse_version(lower_text), parse_version(upper_text)
+        if lower is None or upper is None:
+            return None
+        above = target >= lower if text[0] == "[" else target > lower
+        below = target <= upper if text[-1] == "]" else target < upper
+        return above and below
+    lower = parse_version(text)
+    if lower is None:
+        return None
+    return target >= lower
+
+
+def cmd_validate(meta, ids_arg, boot_version):
     requested = [i.strip() for i in ids_arg.split(",") if i.strip()]
-    all_deps = walk_dependencies(meta)
-    known = {dep["id"] for dep in all_deps}
-    valid, invalid = [], []
+    by_id = {dep["id"]: dep for dep in walk_dependencies(meta)}
+    boot_default, boot_values = select_field(meta, "bootVersion")
+    offered = [ident for ident, _ in boot_values]
+    target = boot_version or boot_default
+    origin = "as requested" if boot_version else "service default"
+
+    if boot_version and offered and boot_version not in offered:
+        print(f"Spring Boot {boot_version} is not offered by this instance. Offered:")
+        for ident in offered:
+            print(f"  {ident}")
+        sys.exit(1)
+
+    valid, incompatible, unchecked, invalid = [], [], [], []
     for ident in requested:
-        (valid if ident in known else invalid).append(ident)
+        dep = by_id.get(ident)
+        if dep is None:
+            invalid.append(ident)
+            continue
+        fits = version_in_range(target, dep["versionRange"]) if target else None
+        if fits is False:
+            incompatible.append(dep)
+        elif fits is None and dep["versionRange"]:
+            unchecked.append(dep)
+        else:
+            valid.append(dep)
+
+    if target:
+        print(f"Checked against Spring Boot {target} ({origin}).\n")
     if valid:
         print("Valid:")
-        for ident in valid:
-            name = next((d["name"] for d in all_deps if d["id"] == ident), "")
-            print(f"  {ident}  ({name})")
+        for dep in valid:
+            print(f"  {dep['id']}  ({dep['name']})")
+    if unchecked:
+        print("\nExists, but compatibility could not be checked:")
+        for dep in unchecked:
+            print(f"  {dep['id']}  ({dep['name']})  requires Boot {dep['versionRange']}")
+    if incompatible:
+        print(f"\nIncompatible with Spring Boot {target}:")
+        for dep in incompatible:
+            print(f"  {dep['id']}  ({dep['name']})  requires Boot {dep['versionRange']}")
     if invalid:
         print("\nInvalid (not offered by this instance):")
         for ident in invalid:
-            suggestions = difflib.get_close_matches(ident, sorted(known), n=3, cutoff=0.4)
+            suggestions = difflib.get_close_matches(ident, sorted(by_id), n=3, cutoff=0.4)
             hint = f"  did you mean: {', '.join(suggestions)}" if suggestions else ""
             print(f"  {ident}{hint}")
-    if not invalid:
-        print("\nAll dependency IDs are valid.")
-    else:
-        sys.exit(1)  # signal failure so the caller can stop before generating
+    if invalid or incompatible:
+        sys.exit(1)
+    print("\nAll dependency IDs are valid.")
 
 
 def cmd_deps(meta, group_filter):
@@ -281,6 +372,9 @@ def build_parser():
     search.add_argument("keyword")
     validate = sub.add_parser("validate", help="Validate a comma-separated list of dependency IDs.")
     validate.add_argument("ids")
+    validate.add_argument("--boot-version", default=None,
+                          help="Spring Boot version to check compatibility against "
+                               "(default: the service default).")
     deps = sub.add_parser("deps", help="List dependency IDs, optionally by group.")
     deps.add_argument("group", nargs="?", default=None)
     return parser
@@ -294,7 +388,7 @@ def main(argv=None):
     elif args.command == "search":
         cmd_search(meta, args.keyword)
     elif args.command == "validate":
-        cmd_validate(meta, args.ids)
+        cmd_validate(meta, args.ids, args.boot_version)
     elif args.command == "deps":
         cmd_deps(meta, args.group)
 

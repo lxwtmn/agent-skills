@@ -21,7 +21,8 @@ Decide which of the three jobs you are doing, then follow its workflow below:
 Read the build file first (`pom.xml` or `build.gradle(.kts)`) and note: Spring Boot
 version, JUnit major version, Testcontainers major version, Surefire/Failsafe or
 Gradle test tasks, existing base classes under `src/test`. Boot 3.5 and Boot 4
-differ in annotations and starters; see the version table in `references/build-and-speed.md`.
+differ in annotations, their packages and starters, so a snippet that compiles on
+one can fail on the other; see the version table in `references/build-and-speed.md`.
 
 Then open the test that is closest to what you are about to write or judge (same
 package, same kind of class). Copy its naming pattern, structure, factories and
@@ -77,15 +78,21 @@ Mechanics, diagnosis and base-class recipes: `references/context-caching.md`.
 
 1. Name the class, the question the test answers, and the rung, in one sentence.
 2. Find the nearest sibling test and reuse its conventions, factories and base class.
-3. Write the test, run it (`./mvnw -q test -Dtest=Name` or `./gradlew test --tests Name`), report the result.
+3. Write the test, run it, report the result. Use the task that actually picks the
+   class up: `./mvnw -q test -Dtest=Name` or `./gradlew test --tests Name` for the
+   default run; `./mvnw -q verify -Dit.test=NameIT` for a Failsafe `*IT` class;
+   `./gradlew integrationTest --tests Name` for a separate Gradle suite. In a
+   multi-module Maven build add `-pl <module> -am -Dsurefire.failIfNoSpecifiedTests=false`.
+   "0 tests run" means the wrong task, not a passing test.
 4. Ask only when the question itself is ambiguous (two classes with that name, a
    class that is both controller and service). Otherwise decide and state the reason.
 
 ## Workflow: Review
 
 1. Measure before reading: if `target/surefire-reports` or `build/test-results` exist,
-   list the slowest classes and the share of total time. Count distinct context
-   configurations (`references/context-caching.md`, "Diagnosing").
+   run `python3 scripts/slowest_tests.py <project dir>` (path relative to this
+   skill's directory) for the slowest classes and their share of total time. Count
+   distinct context configurations (`references/context-caching.md`, "Diagnosing").
 2. Report findings in this order, each with file and line: wrong rung (too heavy),
    runtime hotspots with their cause, context breakers, assertions that cannot fail,
    mocking smells, JUnit 4 leftovers, missing edge cases.
@@ -94,10 +101,13 @@ Mechanics, diagnosis and base-class recipes: `references/context-caching.md`.
 
 ## Workflow: Speed
 
-1. Get numbers: per-class times from the test reports, context count from the cache
-   log (`logging.level.org.springframework.test.context.cache=DEBUG`) or from counting
-   distinct test configurations, container starts. Open the answer with these three
-   numbers in one short table, whatever the proposals turn out to be.
+1. Get numbers: per-class times from the test reports
+   (`python3 scripts/slowest_tests.py <project dir>`; run the suite first if there
+   are no reports), context count and context start time from the cache log
+   (`references/context-caching.md`, "Diagnosing"; the Maven and Gradle commands
+   differ) or from counting distinct test configurations, container starts. Open the
+   answer with these three numbers in one short table, whatever the proposals turn
+   out to be.
 2. Find the cause of the largest item first. Slow tests usually have one concrete
    reason (test data generation, a sleep, a real network call, a per-method container),
    not "Spring is slow".
@@ -121,3 +131,4 @@ Mechanics, diagnosis and base-class recipes: `references/context-caching.md`.
 - `references/sliced-tests.md`: `@WebMvcTest`, `@DataJpaTest`, use-case slice, `@JsonTest`
 - `references/context-caching.md`: cache key anatomy, diagnosis commands, base classes, Testcontainers, WireMock
 - `references/build-and-speed.md`: Maven and Gradle split, parallel forks, PIT, Boot 3.5 vs 4 table
+- `scripts/slowest_tests.py`: slowest test classes and their share of total time, from the XML reports of the last run

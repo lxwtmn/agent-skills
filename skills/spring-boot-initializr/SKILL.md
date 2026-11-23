@@ -22,10 +22,15 @@ told you and only ask about what's genuinely undecided.
 When the user expresses no preference on a given point, lean on these, but surface
 them so the choice is visible rather than hidden:
 
-- **Build tool:** Maven
+- **Build tool:** Maven. This is the skill's own choice; the service marks a
+  Gradle type as its default, so do not take this one from the `versions` output.
 - **Language:** Java
 - **Spring Boot version:** the service's current default (latest stable)
-- **Java version:** the current LTS the service defaults to
+- **Java version:** the major version of the JDK installed on this machine, if the
+  service offers it; otherwise the highest offered version below it. The service's
+  own default is often an older LTS than the one installed, and a project generated
+  for a newer Java than the local JDK will not build. With no JDK installed, fall
+  back to the service default and say that the build cannot be verified here.
 - **Packaging:** Jar
 
 Never hardcode version numbers from memory -- Spring ships new releases constantly
@@ -57,7 +62,16 @@ your working directory is the user's project rather than the skill folder.)
 
 This prints the available build tools, languages, Spring Boot versions, Java
 versions, and packaging, with the service's default marked. Use its output as the
-source of truth for what you offer and for the default you recommend.
+source of truth for what you offer. Recommend the defaults from "Defaults at a
+glance": the service's marker decides the Spring Boot version, but not the build
+tool or the Java version.
+
+Check the local JDK in the same step, because it decides which Java version you can
+recommend and whether the build in step 7 can run at all:
+
+```bash
+java -version
+```
 
 ### 3. Walk the user through the choices
 
@@ -69,8 +83,11 @@ a dozen. A natural order:
 
 1. **Build tool & language** -- default Maven + Java. (Gradle offers Groovy or
    Kotlin DSL, which maps to the `gradle-project` vs `gradle-project-kotlin` type.)
-2. **Spring Boot version & Java version** -- default to the service's defaults; only
-   dig in if the user has a constraint (e.g. "we're stuck on Java 17").
+2. **Spring Boot version & Java version** -- default to the service's Boot default
+   and the Java version that matches the installed JDK; only dig in if the user has
+   a constraint (e.g. "we're stuck on Java 17"). If they ask for a Java version
+   newer than the installed JDK, say that the project will generate but not build
+   on this machine.
 3. **Project coordinates** -- `groupId` (e.g. `com.example`), `artifactId` (the
    project/folder name, e.g. `order-service`), display `name`, `description`,
    `packageName`, and `packaging` (jar/war). Derive sensible defaults: `name` from
@@ -93,6 +110,10 @@ Pick a target location (default: a new folder named after `artifactId` in the
 current directory; confirm if the user cares where it lands). Setting
 `baseDir=<artifactId>` makes the archive self-contained under that one folder, so
 extraction never litters the current directory.
+
+If a folder with that name already exists, stop and ask where the project should
+go. `unzip` would prompt about replacing files and hang in a non-interactive shell,
+and merging a fresh scaffold into existing code is rarely what the user wants.
 
 ```bash
 curl -fSL https://start.spring.io/starter.zip \
@@ -117,8 +138,9 @@ cd <ARTIFACT_ID>
 Why these flags: `--data-urlencode` safely encodes values that contain spaces or
 special characters (the `description` in particular), and `-f` makes curl fail
 loudly on an HTTP error instead of silently saving an error page as a ".zip". If a
-dependency ID is wrong, the API returns 400 with an explanation -- read it and
-correct the ID rather than shipping a broken request.
+dependency ID is wrong or incompatible with the Boot version, the API returns 400
+with an explanation -- read it and correct the request rather than retrying it
+unchanged. Other parameters and endpoints: `references/api.md`.
 
 `unzip` not available? Ask for `starter.tgz` instead and extract with tar:
 
@@ -129,8 +151,19 @@ tar -xzf <ARTIFACT_ID>.tgz && rm <ARTIFACT_ID>.tgz
 
 ### 6. Initialize git
 
-The generated project already includes a suitable `.gitignore`, so a first commit
-is clean:
+First check whether the new folder already sits inside a repository (a monorepo, or
+a workspace the user has under version control):
+
+```bash
+git rev-parse --is-inside-work-tree 2>/dev/null
+```
+
+If that prints `true`, do not run `git init`: it would create a nested repository
+that the outer one cannot track properly. Leave the files uncommitted, tell the
+user, and commit into the surrounding repository only if they ask for it.
+
+Otherwise initialize a fresh repository. The generated project already includes a
+suitable `.gitignore`, so a first commit is clean:
 
 ```bash
 git init -q
@@ -141,30 +174,47 @@ git commit -q -m "Initial commit from Spring Initializr"
 ### 7. Verify the build
 
 A quick build proves the scaffold is coherent and the toolchain is set up before the
-user writes any code. The generated `@SpringBootTest` context-load test is exactly
-the right smoke check. Make the wrapper executable first (exec bits aren't always
-preserved through zipping):
+user writes any code. Which command proves that depends on the dependencies, because
+the generated `@SpringBootTest` context-load test starts the whole application:
+
+- **Self-contained set** (nothing external, or an embedded database such as `h2`):
+  run the tests.
+- **`testcontainers` selected:** the generated test imports a
+  `TestcontainersConfiguration` and starts real containers, so it needs a running
+  Docker daemon. Check with `docker info`. With Docker, run the tests; without it,
+  compile only.
+- **JDBC-based data access** (`data-jpa`, `data-jdbc`, `jdbc`, `flyway`,
+  `liquibase`) **with only an external driver** (`postgresql`, `mysql`, ...) and
+  neither `testcontainers` nor an embedded database: the context test fails with
+  "Failed to configure a DataSource: 'url' attribute is not specified", because
+  nothing tells Boot where the database is. That is expected, not a broken
+  scaffold, so compile only.
+
+Make the wrapper executable first (exec bits aren't always preserved through
+zipping).
 
 Maven:
 ```bash
 chmod +x mvnw
-./mvnw -B -ntp test
+./mvnw -B -ntp test            # run the tests
+./mvnw -B -ntp test-compile    # compile only
 ```
 
 Gradle:
 ```bash
 chmod +x gradlew
-./gradlew test
+./gradlew test                 # run the tests
+./gradlew testClasses          # compile only
 ```
 
 On Windows use `mvnw.cmd` / `gradlew.bat`. The first run downloads dependencies, so
-it can take a minute or two -- that's expected, not a hang.
+it can take a minute or two -- that's expected, not a hang. Building needs a JDK at
+least as new as the selected `javaVersion` (checked in step 2) plus network access
+to Maven Central / the Gradle Plugin Portal.
 
-Before building, sanity-check the JDK: run `java -version` and, if it's older than
-the `javaVersion` you selected, tell the user the build will fail on a version
-mismatch and offer to either regenerate for their installed JDK or point them at
-installing a newer one. Building needs a matching JDK plus network access to Maven
-Central / the Gradle Plugin Portal.
+Say which of the two you ran. "Compiles; the context test was not run because it
+needs a database" is a correct result. "Build verified" after a compile-only run is
+not. If something fails unexpectedly, see `references/troubleshooting.md`.
 
 ### 8. Report and hand off
 
@@ -191,11 +241,23 @@ Bridge the gap with the helper script instead of guessing:
   ```bash
   python3 scripts/query_initializr.py deps SQL
   ```
-- Validate the final set before generating (this catches typos and suggests near
-  matches, and exits non-zero if anything is wrong):
+- Validate the final set before generating. This catches typos and suggests near
+  matches, checks every dependency against the Boot version's compatibility range,
+  and exits non-zero if anything is wrong. Pass `--boot-version` whenever the user
+  chose something other than the service default; without it the check runs
+  against the default:
   ```bash
   python3 scripts/query_initializr.py validate web,data-jpa,postgresql
+  python3 scripts/query_initializr.py validate web,data-jpa,postgresql --boot-version <BOOT_VERSION>
   ```
+  If a dependency is incompatible, tell the user which Boot versions it supports
+  and let them choose between another Boot version and dropping the dependency.
+
+When the set contains JDBC-based data access plus a real database driver, raise the
+test question now instead of discovering it in step 7: the generated context test
+only runs if the project also has `testcontainers` (tests then need Docker) or an
+embedded database such as `h2`. Offer both and the option of neither; do not add a
+dependency the user did not agree to.
 
 Confirm the resolved list with the user in the step-4 summary. When a user asks for
 something common, these are the usual IDs (still validate them, since availability
@@ -207,77 +269,22 @@ and compatibility ranges shift by Boot version): `web` (Spring MVC), `webflux`
 
 ---
 
-## The Spring Initializr HTTP API (reference)
-
-- **Metadata (capabilities):** `GET https://start.spring.io/` with an
-  `Accept: application/json` (or vendor `application/vnd.initializr.v2.2+json`)
-  header returns a JSON document listing every available type, language, version,
-  and dependency, each with its `id` and the service `default`. The helper script
-  wraps this for you.
-- **Generate a project:** `GET`/`POST https://start.spring.io/starter.zip` (or
-  `starter.tgz`) with the parameters below. There are also `pom.xml`, `build.gradle`,
-  and `build.gradle.kts` endpoints if you only want a build file.
-
-Request parameters:
-
-- `type` -- one of `maven-project`, `gradle-project` (Groovy DSL),
-  `gradle-project-kotlin` (Kotlin DSL). This encodes the build tool + build-script
-  language together.
-- `language` -- `java`, `kotlin`, or `groovy`.
-- `bootVersion` -- a Spring Boot version ID from the metadata.
-- `javaVersion` -- e.g. `17`, `21`, `25` (whatever the metadata offers).
-- `packaging` -- `jar` or `war`.
-- `groupId`, `artifactId`, `name`, `description`, `packageName`, `version` -- project
-  coordinates (text).
-- `dependencies` -- comma-separated dependency IDs.
-- `baseDir` -- top-level folder name inside the archive (set this to `artifactId`).
-- `applicationName` -- overrides the generated main class name (optional).
-
-Note: Initializr does not let you pin a specific version of an individual
-dependency via the API -- it selects versions compatible with the chosen Boot
-version. If the user needs a non-default dependency version, generate first, then
-edit the `pom.xml`/`build.gradle` afterward.
-
----
-
-## Restricted networks and offline environments
-
-Both generating and building reach the internet, so a locked-down environment can
-block them:
-
-- **Generation** needs to reach `start.spring.io`. If curl fails with something like
-  "host not in allowlist", a connection timeout, or a proxy denial, the environment
-  is restricting outbound traffic. Tell the user plainly and offer options: run this
-  in an environment with internet access (e.g. their local machine / Claude Code),
-  add `start.spring.io` to the network egress allowlist, or generate the zip
-  themselves from the web UI and hand it over for the git + build steps.
-- **Building** needs Maven Central and (for Gradle) the Gradle Plugin Portal /
-  `services.gradle.org`. If those are blocked, generation may still succeed but the
-  build won't; say so rather than letting it look like a project defect.
-
-Don't quietly retry against a blocked host in a loop -- surface the situation once,
-clearly, and let the user decide how to proceed.
-
 ## Custom / enterprise Initializr instances
 
-Some organizations run their own Initializr with a curated dependency catalog. The
-skill works against any instance: pass `--base-url https://start.mycompany.com` to
-the helper script, and swap the host in the `curl` command. Ask the user whether
-they have a company instance if the context suggests it (internal starters, private
-dependencies).
+Some organizations run their own Initializr with a curated dependency catalog. Ask
+the user whether they have a company instance if the context suggests it (internal
+starters, private dependencies). If so, pass `--base-url https://start.mycompany.com`
+to the helper script and swap the host in the `curl` command.
 
-## Troubleshooting
+## References
 
-- **HTTP 400 on generate** -- almost always a bad `dependencyId` or an
-  incompatible one for the chosen `bootVersion`. Re-run the `validate` command and
-  check the compatibility range shown by `search`.
-- **Downloaded "zip" won't extract** -- you likely captured an error response.
-  Ensure `-f` is on the curl command and inspect the file (`file <name>.zip`); if
-  it's text, it's an error message to read.
-- **Build fails immediately with a Java version error** -- JDK/`javaVersion`
-  mismatch; see step 7.
-- **Wrapper "permission denied"** -- `chmod +x mvnw gradlew` (exec bits can be lost
-  through zipping).
+- `references/api.md`: endpoints, every request parameter, error responses, details
+  on custom instances. Read it when you need something the standard `curl` call
+  does not show.
+- `references/troubleshooting.md`: restricted networks and offline environments,
+  plus a symptom list (HTTP 400, broken zip, Java version errors, DataSource and
+  Docker failures). Read it as soon as generation or the build fails, before
+  retrying anything.
 
 ---
 
