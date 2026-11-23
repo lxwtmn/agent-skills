@@ -7,6 +7,11 @@
 - Default size 32 with LRU eviction (`spring.test.context.cache.maxSize`). A suite with
   more distinct configurations than that evicts and restarts contexts.
 - The cache lives per JVM: every Surefire/Failsafe fork or Gradle worker has its own.
+- From Spring Framework 7 (Boot 4) a cached context that is not in use is paused:
+  its `Lifecycle` beans (listeners, schedulers) are stopped and restarted when a test
+  needs the context again. Background work of one context no longer disturbs tests
+  of another, but every switch between contexts costs a restart of those beans.
+  `spring.test.context.cache.pause=never` turns it off.
 
 ## What is in the key
 
@@ -28,27 +33,59 @@ with `@MockitoBean` fields plus a subclass adding one more is a new context per 
 
    ```bash
    grep -rlE "@(SpringBootTest|WebMvcTest|DataJpaTest|JsonTest|WebFluxTest|RestClientTest)" src/test | wc -l
-   grep -rhE "^@(Import|MockitoBean|ActiveProfiles|TestPropertySource|DynamicPropertySource|ImportTestcontainers)" src/test | sort | uniq -c | sort -rn
+   grep -rhoE "^\s*@(Import|MockitoBean|MockitoSpyBean|ActiveProfiles|TestPropertySource|DynamicPropertySource|ImportTestcontainers)\b.*" src/test | sed 's/^ *//' | sort | uniq -c | sort -rn
    ```
 
+   The first number is test classes that start a context at all, not distinct
+   contexts. The second lists the annotations that split the cache, with their
+   arguments, so identical lines are candidates for sharing and one-off lines are
+   candidates for an extra context. `\s*` matters: `@MockitoBean` and
+   `@DynamicPropertySource` sit on indented fields and methods.
+
 2. Get the real number from a run with the cache logger on; the last statistics line
-   has `missCount` = contexts started and shows whether `size` hit `maxSize`:
+   has `missCount` = contexts started and shows whether `size` hit `maxSize`.
+
+   Maven forwards `-D` properties from the command line into the test JVM:
 
    ```bash
    ./mvnw test -Dlogging.level.org.springframework.test.context.cache=DEBUG > build.log 2>&1
    grep "cache statistics" build.log | tail -1
    ```
 
-   On Boot projects `grep -c "Started .* in .* seconds" build.log` gives the same count,
-   including slices.
+   Gradle does not; a `-D` on `./gradlew` only reaches the build JVM. Add the
+   property to the test tasks for the measurement and take it out again afterwards.
+   The output lands in the XML reports, not on the console:
 
-3. Weigh it. Context starts cost roughly one to three seconds each with a database.
-   Thirty contexts are a minute; if the suite takes six minutes, look for the other five first.
+   ```kotlin
+   tasks.withType<Test> {
+       systemProperty("logging.level.org.springframework.test.context.cache", "DEBUG")
+   }
+   ```
+
+   ```bash
+   ./gradlew cleanTest test
+   grep -rhoE "cache statistics: .*" build/test-results | tail -1
+   ```
+
+   With several forks or workers there is one cache per JVM; add up `missCount`
+   across them.
+
+3. Measure what the starts cost instead of estimating. Boot logs one "Started ... in
+   N seconds" line per context it starts, slices included:
+
+   ```bash
+   grep -ohE "Started .* in [0-9.]+ seconds" build.log | awk '{s += $(NF-1)} END {print NR " context starts, " s " s"}'
+   ```
+
+   For Gradle run the same `grep` with `-r` over `build/test-results` instead of
+   `build.log`. Put that sum next to the suite's total runtime. If context starts are
+   one minute of a six-minute suite, look for the other five first.
 
 ## Base class per test kind
 
 ```java
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
 @ActiveProfiles("integration-test")
 @ImportTestcontainers(SharedContainers.class)
 public abstract class AbstractIntegrationTest {
@@ -83,6 +120,12 @@ public final class SharedContainers {
     static final GenericContainer REDIS = new GenericContainer("redis:<pinned tag>").withExposedPorts(6379);
 }
 ```
+
+This is the Boot 4 form. There `@SpringBootTest` no longer provides a
+`TestRestTemplate` by itself: the test needs `@AutoConfigureTestRestTemplate` and
+the `spring-boot-resttestclient` test dependency (plus `spring-boot-restclient`),
+and the class lives in `org.springframework.boot.resttestclient`. On Boot 3.x drop
+the annotation; `TestRestTemplate` is available as soon as a real port is used.
 
 Rules for subclasses: add no `@SpringBootTest`, profile, property, `@MockitoBean`
 or `@Import`. If one test truly needs a mock, either move it into the base class or
@@ -120,4 +163,8 @@ Prefer explicit cleanup in `@AfterEach` (`deleteAllInBatch`, cache clear, WireMo
 | --- | --- | --- |
 | `MockMvcTester` / `MockMvc` | no | default; fastest; servlet semantics simulated |
 | `WebTestClient` | either | reactive apps, or `RANDOM_PORT` with fluent assertions |
-| `TestRestTemplate` | yes | real filters, real serialization, real HTTP needed |
+| `TestRestTemplate` | yes | real filters, real serialization, real HTTP needed; on Boot 4 needs `@AutoConfigureTestRestTemplate` |
+| `RestTestClient` (Boot 4) | either | new code on Boot 4 that wants one fluent client for mock and real server; enable with `@AutoConfigureRestTestClient` |
+
+`MockMvc` and `MockMvcTester` inside a `@SpringBootTest` need `@AutoConfigureMockMvc`;
+`@WebMvcTest` brings them along.

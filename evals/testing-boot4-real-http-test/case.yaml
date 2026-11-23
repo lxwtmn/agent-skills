@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: testing-boot4-real-http-test
+description: Spring Boot 4 project where TestRestTemplate needs @AutoConfigureTestRestTemplate, the spring-boot-resttestclient dependency and the new package. A Boot 3 answer from memory compiles nowhere.
+tags: [testing, write, boot4]
+context:
+  scaffold_script: fixture.sh

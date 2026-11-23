@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: testing-speed-diagnosis
+description: Reports of a 236 s suite where one class with Thread.sleep costs 182 s and five differently configured @SpringBootTest classes cost about 51 s. The right answer measures first and ranks the sleep above context caching.
+tags: [testing, speed]
+context:
+  scaffold_script: fixture.sh

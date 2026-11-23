@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: testing-write-delegating-use-case
+description: A use case that only forwards to a repository whose query already has a slice test. The right answer is a Mockito unit test in the project's style, not a Spring context.
+tags: [testing, write]
+context:
+  scaffold_script: fixture.sh
