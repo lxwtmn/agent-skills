@@ -34,6 +34,7 @@ npx skills add lxwtmn/agent-skills --list
 | Skill | What it does | Install |
 | --- | --- | --- |
 | [`spring-boot-initializr`](skills/spring-boot-initializr/) | Scaffolds a new Spring Boot project via the Spring Initializr API (`start.spring.io`) — guides you through build tool, language, versions, and dependencies, then downloads, extracts, git-inits, and verifies the build. | `npx skills add lxwtmn/agent-skills --skill spring-boot-initializr` |
+| [`spring-boot-testing`](skills/spring-boot-testing/) | Writes, reviews and speeds up tests in Spring Boot projects (Java, JUnit, Mockito, Testcontainers, Maven or Gradle) — picks the cheapest test type that answers the question, follows the project's conventions, protects the Spring context cache, and measures before proposing speed-ups. | `npx skills add lxwtmn/agent-skills --skill spring-boot-testing` |
 
 ## Add a skill
 
